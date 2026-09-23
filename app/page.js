@@ -117,8 +117,6 @@ export default function Home() {
             plantilla_id: plantillaSel,
             latitud_registro: latTec,
             longitud_registro: lonTec,
-            latitud: latTec,
-            longitud: lonTec,
             estado: 'En Mantenimiento'
           }
         ]);
