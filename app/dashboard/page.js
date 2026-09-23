@@ -3,212 +3,157 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 
-export default function Home() {
-  const [tecnicos, setTecnicos] = useState([]);
-  const [clientes, setClientes] = useState([]);
-  const [plantillas, setPlantillas] = useState([]);
-  
-  const [tecnicoSel, setTecnicoSel] = useState('');
-  const [clienteSel, setClienteSel] = useState('');
-  const [plantillaSel, setPlantillaSel] = useState('');
-  const [comentario, setComentario] = useState('');
-
+export default function Dashboard() {
+  const [registros, setRegistros] = useState([]);
   const [cargando, setCargando] = useState(true);
-  const [mensaje, setMensaje] = useState('');
-  const [errorCarga, setErrorCarga] = useState('');
+  const [error, setError] = useState('');
 
-  useEffect(() => {
-    async function cargarCatalogos() {
-      try {
-        setCargando(true);
-        setErrorCarga('');
+  const cargarRegistros = async () => {
+    try {
+      setCargando(true);
+      setError('');
 
-        // Cargar Técnicos
-        const { data: dataTec, error: errTec } = await supabase
-          .from('tecnicos')
-          .select('*');
+      const { data, error: err } = await supabase
+        .from('registros_actividad')
+        .select(`
+          id,
+          created_at,
+          fecha_fin,
+          estado,
+          comentario_alerta,
+          latitud_registro,
+          longitud_registro,
+          tecnicos ( nombre ),
+          clientes ( nombre ),
+          plantillas ( nombre )
+        `)
+        .order('created_at', { ascending: false });
 
-        if (errTec) throw new Error(`Error en técnicos: ${errTec.message}`);
-        if (dataTec) setTecnicos(dataTec);
+      if (err) throw err;
 
-        // Cargar Clientes
-        const { data: dataCli, error: errCli } = await supabase
-          .from('clientes')
-          .select('*');
-
-        if (errCli) throw new Error(`Error en clientes: ${errCli.message}`);
-        if (dataCli) setClientes(dataCli);
-
-        // Cargar Plantillas
-        const { data: dataPla, error: errPla } = await supabase
-          .from('plantillas')
-          .select('*');
-
-        if (errPla) throw new Error(`Error en plantillas: ${errPla.message}`);
-        if (dataPla) setPlantillas(dataPla);
-
-      } catch (err) {
-        console.error('Error cargando catálogos:', err);
-        setErrorCarga(err.message || 'Error al conectar con la base de datos.');
-      } finally {
-        setCargando(false);
-      }
+      setRegistros(data || []);
+    } catch (err) {
+      console.error('Error cargando el dashboard:', err);
+      setError(err.message || 'Error al conectar con la base de datos.');
+    } finally {
+      setCargando(false);
     }
-
-    cargarCatalogos();
-  }, []);
-
-  const handleRegistrar = async (e) => {
-    e.preventDefault();
-    setMensaje('');
-
-    if (!tecnicoSel || !clienteSel || !plantillaSel) {
-      alert('Por favor selecciona Técnico, Cliente y Plantilla.');
-      return;
-    }
-
-    if (!navigator.geolocation) {
-      alert('Tu navegador no soporta geolocalización.');
-      return;
-    }
-
-    navigator.geolocation.getCurrentPosition(
-      async (position) => {
-        const { latitude, longitude } = position.coords;
-
-        const { error } = await supabase.from('registros_actividad').insert([
-          {
-            tecnico_id: tecnicoSel,
-            cliente_id: clienteSel,
-            plantilla_id: plantillaSel,
-            latitud_registro: latitude,
-            longitud_registro: longitude,
-            comentario_alerta: comentario,
-            estado: 'En Progreso'
-          }
-        ]);
-
-        if (error) {
-          setMensaje(`Error al registrar: ${error.message}`);
-        } else {
-          setMensaje('¡Inicio de mantenimiento registrado con éxito!');
-          setTecnicoSel('');
-          setClienteSel('');
-          setPlantillaSel('');
-          setComentario('');
-        }
-      },
-      (error) => {
-        alert('No se pudo obtener la ubicación GPS. Verifica los permisos.');
-      },
-      { enableHighAccuracy: true }
-    );
   };
 
+  useEffect(() => {
+    cargarRegistros();
+  }, []);
+
   return (
-    <div className="min-h-screen bg-slate-100 p-4 md:p-8 font-sans flex flex-col justify-center items-center">
-      <div className="bg-white p-6 rounded-2xl shadow-md w-full max-w-md border border-slate-200 space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900 text-center">
-            Registro de Visita Técnica
-          </h1>
-          <p className="text-slate-500 text-xs text-center mt-1">
-            Aguialarmas Ltda. - Control de Campo
-          </p>
+    <div className="min-h-screen bg-slate-100 p-4 md:p-8 font-sans">
+      <div className="max-w-6xl mx-auto space-y-6">
+        
+        {/* Cabecera */}
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900">
+              Dashboard de Control de Campo
+            </h1>
+            <p className="text-slate-500 text-xs mt-1">
+              Aguialarmas Ltda. - Registros de Visitas y Mantenimiento
+            </p>
+          </div>
+          <div className="mt-4 md:mt-0 flex gap-3">
+            <button
+              onClick={cargarRegistros}
+              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl text-xs font-semibold shadow-sm transition"
+            >
+              Actualizar Datos
+            </button>
+            <a
+              href="/"
+              className="bg-slate-800 hover:bg-slate-900 text-white px-4 py-2 rounded-xl text-xs font-semibold shadow-sm transition inline-flex items-center"
+            >
+              Ir al Formulario
+            </a>
+          </div>
         </div>
 
-        {errorCarga && (
-          <div className="bg-red-50 border border-red-200 text-red-700 text-xs p-3 rounded-lg">
-            <strong>Error de conexión:</strong> {errorCarga}
+        {/* Mensaje de Error */}
+        {error && (
+          <div className="bg-red-50 border border-red-200 text-red-700 text-xs p-4 rounded-xl">
+            <strong>Error:</strong> {error}
           </div>
         )}
 
-        {cargando ? (
-          <div className="text-center py-6 text-slate-500 text-sm animate-pulse">
-            Cargando opciones desde el servidor...
-          </div>
-        ) : (
-          <form onSubmit={handleRegistrar} className="space-y-4 text-xs font-semibold text-slate-700">
-            {/* Técnico */}
-            <div>
-              <label className="block mb-1">Técnico:</label>
-              <select
-                value={tecnicoSel}
-                onChange={(e) => setTecnicoSel(e.target.value)}
-                className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-slate-800 font-normal focus:outline-none focus:ring-2 focus:ring-blue-500"
-                required
-              >
-                <option value="">-- Seleccionar Técnico --</option>
-                {tecnicos.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.nombre}
-                  </option>
-                ))}
-              </select>
+        {/* Tabla de Registros */}
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+          {cargando ? (
+            <div className="p-8 text-center text-slate-400 text-sm animate-pulse">
+              Cargando registros de actividad...
             </div>
-
-            {/* Cliente */}
-            <div>
-              <label className="block mb-1">Cliente:</label>
-              <select
-                value={clienteSel}
-                onChange={(e) => setClienteSel(e.target.value)}
-                className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-slate-800 font-normal focus:outline-none focus:ring-2 focus:ring-blue-500"
-                required
-              >
-                <option value="">-- Seleccionar Cliente --</option>
-                {clientes.map((c) => (
-                  <option key={c.id || c.id_cliente} value={c.id || c.id_cliente}>
-                    {c.nombre}
-                  </option>
-                ))}
-              </select>
+          ) : registros.length === 0 ? (
+            <div className="p-8 text-center text-slate-500 text-sm">
+              No hay registros de actividad guardados aún.
             </div>
-
-            {/* Plantilla */}
-            <div>
-              <label className="block mb-1">Plantilla / Trabajo:</label>
-              <select
-                value={plantillaSel}
-                onChange={(e) => setPlantillaSel(e.target.value)}
-                className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-slate-800 font-normal focus:outline-none focus:ring-2 focus:ring-blue-500"
-                required
-              >
-                <option value="">-- Seleccionar Plantilla --</option>
-                {plantillas.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.nombre}
-                  </option>
-                ))}
-              </select>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs text-slate-700">
+                <thead className="bg-slate-50 border-b border-slate-200 text-slate-800 uppercase font-semibold">
+                  <tr>
+                    <th className="p-4">Fecha / Hora</th>
+                    <th className="p-4">Técnico</th>
+                    <th className="p-4">Cliente</th>
+                    <th className="p-4">Plantilla / Trabajo</th>
+                    <th className="p-4">Estado</th>
+                    <th className="p-4">Ubicación GPS</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {registros.map((reg) => (
+                    <tr key={reg.id} className="hover:bg-slate-50 transition">
+                      <td className="p-4 whitespace-nowrap">
+                        {reg.created_at
+                          ? new Date(reg.created_at).toLocaleString('es-CO')
+                          : 'N/A'}
+                      </td>
+                      <td className="p-4 font-medium text-slate-900">
+                        {reg.tecnicos?.nombre || 'N/A'}
+                      </td>
+                      <td className="p-4">
+                        {reg.clientes?.nombre || 'N/A'}
+                      </td>
+                      <td className="p-4">
+                        {reg.plantillas?.nombre || 'N/A'}
+                      </td>
+                      <td className="p-4 whitespace-nowrap">
+                        <span
+                          className={`px-2.5 py-1 rounded-full text-[10px] font-bold ${
+                            reg.estado === 'Finalizado'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : 'bg-amber-100 text-amber-800'
+                          }`}
+                        >
+                          {reg.estado || 'En Progreso'}
+                        </span>
+                      </td>
+                      <td className="p-4 whitespace-nowrap text-slate-500">
+                        {reg.latitud_registro && reg.longitud_registro ? (
+                          <a
+                            href={`https://maps.google.com/?q=${reg.latitud_registro},${reg.longitud_registro}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-600 hover:underline font-medium"
+                          >
+                            Ver en Mapas
+                          </a>
+                        ) : (
+                          'Sin GPS'
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
+          )}
+        </div>
 
-            {/* Comentario u Observación */}
-            <div>
-              <label className="block mb-1">Comentario u Observación (Opcional):</label>
-              <textarea
-                value={comentario}
-                onChange={(e) => setComentario(e.target.value)}
-                placeholder="Escribe alguna observación previa..."
-                rows={3}
-                className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-slate-800 font-normal focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-
-            <button
-              type="submit"
-              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-xl transition shadow-md text-sm mt-2"
-            >
-              Registrar Inicio Mantenimiento
-            </button>
-          </form>
-        )}
-
-        {mensaje && (
-          <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs p-3 rounded-lg text-center font-semibold">
-            {mensaje}
-          </div>
-        )}
       </div>
     </div>
   );
