@@ -3,151 +3,471 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 
+// Fórmula de Haversine para calcular distancia en kilómetros entre dos coordenadas GPS
+function calcularDistanciaKm(lat1, lon1, lat2, lon2) {
+  if (!lat1 || !lon1 || !lat2 || !lon2) return 0;
+  const R = 6371; // Radio de la Tierra en km
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
 export default function Dashboard() {
   const [registros, setRegistros] = useState([]);
+  const [tecnicos, setTecnicos] = useState([]);
+  const [clientes, setClientes] = useState([]);
   const [cargando, setCargando] = useState(true);
-  const [error, setError] = useState('');
 
-  const cargarRegistros = async () => {
+  // Filtros
+  const [filtroTecnico, setFiltroTecnico] = useState('Todos');
+  const [filtroCliente, setFiltroCliente] = useState('Todos');
+  const [filtroFechaInicio, setFiltroFechaInicio] = useState('');
+  const [filtroFechaFin, setFiltroFechaFin] = useState('');
+  const [filtroTipoAlerta, setFiltroTipoAlerta] = useState('Cualquiera');
+  const [filtroEstadoAlerta, setFiltroEstadoAlerta] = useState('Cualquiera');
+
+  const cargarDatos = async () => {
     try {
       setCargando(true);
-      setError('');
 
-      const { data, error: err } = await supabase
-        .from('registros_actividad')
-        .select(`
-          id,
-          created_at,
-          fecha_fin,
-          estado,
-          comentario_alerta,
-          latitud_registro,
-          longitud_registro,
-          tecnicos ( nombre ),
-          clientes ( nombre ),
-          plantillas ( nombre )
-        `)
-        .order('created_at', { ascending: false });
+      const [
+        { data: dataReg },
+        { data: dataTec },
+        { data: dataCli },
+        { data: dataPla }
+      ] = await Promise.all([
+        supabase.from('registros_actividad').select('*').order('created_at', { ascending: true }),
+        supabase.from('tecnicos').select('*'),
+        supabase.from('clientes').select('*'),
+        supabase.from('plantillas').select('*')
+      ]);
 
-      if (err) throw err;
+      if (dataTec) setTecnicos(dataTec);
+      if (dataCli) setClientes(dataCli);
 
-      setRegistros(data || []);
+      const mapTecnicos = Object.fromEntries(
+        (dataTec || []).map((t) => [String(t.id), t.nombre || t.nombre_tecnico])
+      );
+      const mapClientesObj = Object.fromEntries(
+        (dataCli || []).map((c) => [String(c.id || c.id_cliente), c])
+      );
+      const mapPlantillas = Object.fromEntries(
+        (dataPla || []).map((p) => [
+          String(p.id),
+          {
+            nombre: p.nombre || p.nombre_plantilla,
+            tiempoEst: p.tiempo_estimado || p.duracion_minutos || 60
+          }
+        ])
+      );
+
+      // Objeto auxiliar para seguir el historial del último cliente y hora de fin de cada técnico
+      const ultimoRegistroTecnico = {};
+
+      const registrosProcesados = (dataReg || []).map((reg) => {
+        const clienteObj = mapClientesObj[String(reg.cliente_id)] || {};
+        const plantillaObj = mapPlantillas[String(reg.plantilla_id)] || {};
+        
+        const tecId = String(reg.tecnico_id);
+        const fechaIngreso = reg.created_at || reg.fecha_inicio || reg.fecha_registro;
+        const fechaSalida = reg.fecha_fin || reg.updated_at;
+
+        // 1. Cálculo de Duración de Trabajo
+        let duracionRealMin = 0;
+        if (fechaIngreso && fechaSalida && reg.estado === 'Finalizado') {
+          const diffMs = new Date(fechaSalida) - new Date(fechaIngreso);
+          duracionRealMin = Math.round(diffMs / (1000 * 60));
+        }
+
+        const tiempoEstTrabajo = plantillaObj.tiempoEst || 60;
+        const excedeTrabajo = duracionRealMin > tiempoEstTrabajo;
+
+        // 2. Cálculo de Desplazamiento desde el Cliente Anterior
+        let desplazamientoRealMin = null;
+        let desplazamientoEstMin = null;
+        let alertaDesplazamiento = false;
+
+        const anterior = ultimoRegistroTecnico[tecId];
+
+        if (anterior && anterior.fechaSalida && fechaIngreso) {
+          // Tiempo real entre la salida del trabajo previo e ingreso al nuevo cliente
+          const diffDespMs = new Date(fechaIngreso) - new Date(anterior.fechaSalida);
+          desplazamientoRealMin = Math.max(0, Math.round(diffDespMs / (1000 * 60)));
+
+          // Coordenadas de origen (cliente previo) y destino (cliente actual)
+          const lat1 = anterior.clienteObj?.latitud || anterior.clienteObj?.latitud_cliente;
+          const lon1 = anterior.clienteObj?.longitud || anterior.clienteObj?.longitud_cliente;
+          const lat2 = clienteObj?.latitud || clienteObj?.latitud_cliente;
+          const lon2 = clienteObj?.longitud || clienteObj?.longitud_cliente;
+
+          if (lat1 && lon1 && lat2 && lon2) {
+            const distKm = calcularDistanciaKm(Number(lat1), Number(lon1), Number(lat2), Number(lon2));
+            // Estimación basada en velocidad promedio de 30 km/h (2 min por km) + 5 min de tolerancia/base
+            desplazamientoEstMin = Math.round((distKm / 30) * 60) + 5;
+          } else {
+            desplazamientoEstMin = 15; // Tiempo base por defecto
+          }
+
+          // Alerta si el tiempo real supera el estimado en MÁS DE 5 MINUTOS
+          if (desplazamientoRealMin > (desplazamientoEstMin + 5)) {
+            alertaDesplazamiento = true;
+          }
+        }
+
+        // Actualizar último registro activo del técnico para el siguiente cálculo
+        if (fechaSalida && reg.estado === 'Finalizado') {
+          ultimoRegistroTecnico[tecId] = {
+            fechaSalida,
+            clienteObj
+          };
+        }
+
+        // Determinación del Tipo de Alerta
+        let tipoAlertaCalculado = 'Ninguna';
+        if (alertaDesplazamiento && excedeTrabajo) {
+          tipoAlertaCalculado = 'Desplazamiento y Trabajo';
+        } else if (alertaDesplazamiento) {
+          tipoAlertaCalculado = 'Desplazamiento';
+        } else if (excedeTrabajo) {
+          tipoAlertaCalculado = 'Exceso Tiempo';
+        }
+
+        return {
+          ...reg,
+          nombre_tecnico: mapTecnicos[tecId] || 'Técnico N/A',
+          nombre_cliente: clienteObj?.nombre || clienteObj?.nombre_cliente || 'Cliente N/A',
+          nombre_plantilla: plantillaObj.nombre || 'Plantilla N/A',
+          fechaIngreso,
+          fechaSalida,
+          duracionRealMin,
+          tiempoEstTrabajo,
+          excedeTrabajo,
+          desplazamientoRealMin,
+          desplazamientoEstMin,
+          alertaDesplazamiento,
+          tipoAlerta: reg.tipo_alerta || tipoAlertaCalculado,
+          estadoAlerta: reg.estado_alerta || (alertaDesplazamiento || excedeTrabajo ? 'Pendiente' : 'Aprobada'),
+          comentarioTecnico: reg.comentario_alerta || reg.comentario || 'NA',
+          comentarioGerencia: reg.comentario_gerencia || ''
+        };
+      });
+
+      // Invertir orden para que aparezcan los más recientes arriba
+      setRegistros(registrosProcesados.reverse());
     } catch (err) {
       console.error('Error cargando el dashboard:', err);
-      setError(err.message || 'Error al conectar con la base de datos.');
     } finally {
       setCargando(false);
     }
   };
 
   useEffect(() => {
-    cargarRegistros();
+    cargarDatos();
   }, []);
+
+  const handleLimpiarFiltros = () => {
+    setFiltroTecnico('Todos');
+    setFiltroCliente('Todos');
+    setFiltroFechaInicio('');
+    setFiltroFechaFin('');
+    setFiltroTipoAlerta('Cualquiera');
+    setFiltroEstadoAlerta('Cualquiera');
+  };
+
+  // Filtrado de registros
+  const registrosFiltrados = registros.filter((reg) => {
+    if (filtroTecnico !== 'Todos' && reg.nombre_tecnico !== filtroTecnico) return false;
+    if (filtroCliente !== 'Todos' && reg.nombre_cliente !== filtroCliente) return false;
+    
+    if (filtroFechaInicio && reg.fechaIngreso) {
+      const fIng = new Date(reg.fechaIngreso).toISOString().split('T')[0];
+      if (fIng < filtroFechaInicio) return false;
+    }
+    
+    if (filtroFechaFin && reg.fechaIngreso) {
+      const fIng = new Date(reg.fechaIngreso).toISOString().split('T')[0];
+      if (fIng > filtroFechaFin) return false;
+    }
+
+    if (filtroTipoAlerta !== 'Cualquiera' && reg.tipoAlerta !== filtroTipoAlerta) return false;
+    if (filtroEstadoAlerta !== 'Cualquiera' && reg.estadoAlerta !== filtroEstadoAlerta) return false;
+
+    return true;
+  });
+
+  const formatearFechaHora = (strFecha) => {
+    if (!strFecha) return 'N/A';
+    const d = new Date(strFecha);
+    const fecha = d.toISOString().split('T')[0];
+    const hora = d.toTimeString().split(' ')[0].substring(0, 5);
+    return { fecha, hora };
+  };
+
+  const formatearDuracionStr = (minutos) => {
+    if (!minutos || minutos <= 0) return '0:00:00';
+    const hrs = Math.floor(minutos / 60);
+    const mins = minutos % 60;
+    return `${hrs}:${mins < 10 ? '0' : ''}${mins}:00`;
+  };
 
   return (
     <div className="min-h-screen bg-slate-100 p-4 md:p-8 font-sans">
-      <div className="max-w-6xl mx-auto space-y-6">
+      <div className="max-w-7xl mx-auto space-y-6">
         
-        {/* Cabecera */}
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+        {/* Cabecera y Botones Superiores */}
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">
-              Dashboard de Control de Campo
+            <h1 className="text-2xl font-bold text-slate-800">
+              Dashboard de Actividad
             </h1>
-            <p className="text-slate-500 text-xs mt-1">
-              Aguialarmas Ltda. - Registros de Visitas y Mantenimiento
+            <p className="text-slate-500 text-xs mt-0.5">
+              Mostrando el historial de visitas de los técnicos con alertas de desplazamiento y tiempos.
             </p>
           </div>
-          <div className="mt-4 md:mt-0 flex gap-3">
-            <button
-              onClick={cargarRegistros}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl text-xs font-semibold shadow-sm transition"
-            >
-              Actualizar Datos
+          <div className="flex gap-3">
+            <button className="bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs px-4 py-2.5 rounded-xl shadow-sm transition">
+              Ver Trabajos en Progreso
             </button>
-            <a
-              href="/"
-              className="bg-slate-800 hover:bg-slate-900 text-white px-4 py-2 rounded-xl text-xs font-semibold shadow-sm transition inline-flex items-center"
-            >
-              Ir al Formulario
-            </a>
+            <button className="bg-purple-600 hover:bg-purple-700 text-white font-semibold text-xs px-4 py-2.5 rounded-xl shadow-sm transition">
+              Ver Log de Plantillas
+            </button>
           </div>
         </div>
 
-        {/* Mensaje de Error */}
-        {error && (
-          <div className="bg-red-50 border border-red-200 text-red-700 text-xs p-4 rounded-xl">
-            <strong>Error:</strong> {error}
-          </div>
-        )}
+        {/* Panel de Filtros */}
+        <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 space-y-4">
+          <h2 className="text-xs font-bold text-slate-700">Filtros</h2>
+          
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-xs">
+            <div>
+              <label className="block mb-1 text-slate-600 font-semibold">Técnico:</label>
+              <select
+                value={filtroTecnico}
+                onChange={(e) => setFiltroTecnico(e.target.value)}
+                className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-slate-800 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              >
+                <option value="Todos">Todos</option>
+                {tecnicos.map((t) => {
+                  const name = t.nombre || t.nombre_tecnico;
+                  return <option key={t.id} value={name}>{name}</option>;
+                })}
+              </select>
+            </div>
 
-        {/* Tabla de Registros */}
+            <div>
+              <label className="block mb-1 text-slate-600 font-semibold">Cliente:</label>
+              <select
+                value={filtroCliente}
+                onChange={(e) => setFiltroCliente(e.target.value)}
+                className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-slate-800 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              >
+                <option value="Todos">Todos</option>
+                {clientes.map((c) => {
+                  const name = c.nombre || c.nombre_cliente;
+                  return <option key={c.id || c.id_cliente} value={name}>{name}</option>;
+                })}
+              </select>
+            </div>
+
+            <div>
+              <label className="block mb-1 text-slate-600 font-semibold">Fecha Inicio:</label>
+              <input
+                type="date"
+                value={filtroFechaInicio}
+                onChange={(e) => setFiltroFechaInicio(e.target.value)}
+                className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-slate-800 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+            </div>
+
+            <div>
+              <label className="block mb-1 text-slate-600 font-semibold">Fecha Fin:</label>
+              <input
+                type="date"
+                value={filtroFechaFin}
+                onChange={(e) => setFiltroFechaFin(e.target.value)}
+                className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-slate-800 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-xs pt-1">
+            <div>
+              <label className="block mb-1 text-slate-600 font-semibold">Tipo de Alerta:</label>
+              <select
+                value={filtroTipoAlerta}
+                onChange={(e) => setFiltroTipoAlerta(e.target.value)}
+                className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-slate-800 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              >
+                <option value="Cualquiera">Cualquiera</option>
+                <option value="Desplazamiento">Desplazamiento</option>
+                <option value="Exceso Tiempo">Exceso Tiempo</option>
+                <option value="Ninguna">Ninguna</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block mb-1 text-slate-600 font-semibold">Estado de Alerta:</label>
+              <select
+                value={filtroEstadoAlerta}
+                onChange={(e) => setFiltroEstadoAlerta(e.target.value)}
+                className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-slate-800 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              >
+                <option value="Cualquiera">Cualquiera</option>
+                <option value="Pendiente">Pendiente</option>
+                <option value="Aprobada">Aprobada</option>
+                <option value="Rechazada">Rechazada</option>
+              </select>
+            </div>
+
+            <div className="md:col-span-2 flex gap-3 items-end">
+              <button
+                onClick={() => {}}
+                className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 rounded-xl transition text-center shadow-sm"
+              >
+                Filtrar
+              </button>
+              <button
+                onClick={handleLimpiarFiltros}
+                className="flex-1 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold py-2.5 rounded-xl transition text-center"
+              >
+                Limpiar
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Tabla Principal con Alertas */}
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
           {cargando ? (
-            <div className="p-8 text-center text-slate-400 text-sm animate-pulse">
-              Cargando registros de actividad...
-            </div>
-          ) : registros.length === 0 ? (
-            <div className="p-8 text-center text-slate-500 text-sm">
-              No hay registros de actividad guardados aún.
+            <div className="p-8 text-center text-slate-400 text-xs">Cargando registros de actividad...</div>
+          ) : registrosFiltrados.length === 0 ? (
+            <div className="p-8 text-center text-slate-500 text-xs">
+              No se encontraron registros con los filtros seleccionados.
             </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs text-slate-700">
-                <thead className="bg-slate-50 border-b border-slate-200 text-slate-800 uppercase font-semibold">
+                <thead className="bg-slate-50 border-b border-slate-200 text-slate-400 uppercase font-bold text-[10px] tracking-wider">
                   <tr>
-                    <th className="p-4">Fecha / Hora</th>
-                    <th className="p-4">Técnico</th>
-                    <th className="p-4">Cliente</th>
-                    <th className="p-4">Plantilla / Trabajo</th>
-                    <th className="p-4">Estado</th>
-                    <th className="p-4">Ubicación GPS</th>
+                    <th className="p-4">TÉCNICO</th>
+                    <th className="p-4">CLIENTE</th>
+                    <th className="p-4">INGRESO</th>
+                    <th className="p-4">SALIDA</th>
+                    <th className="p-4">DESPLAZAMIENTO</th>
+                    <th className="p-4">DURACIÓN TRABAJO</th>
+                    <th className="p-4">COMENTARIOS Y VERDICTO</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {registros.map((reg) => (
-                    <tr key={reg.id} className="hover:bg-slate-50 transition">
-                      <td className="p-4 whitespace-nowrap">
-                        {reg.created_at
-                          ? new Date(reg.created_at).toLocaleString('es-CO')
-                          : 'N/A'}
-                      </td>
-                      <td className="p-4 font-medium text-slate-900">
-                        {reg.tecnicos?.nombre || 'N/A'}
-                      </td>
-                      <td className="p-4">
-                        {reg.clientes?.nombre || 'N/A'}
-                      </td>
-                      <td className="p-4">
-                        {reg.plantillas?.nombre || 'N/A'}
-                      </td>
-                      <td className="p-4 whitespace-nowrap">
-                        <span
-                          className={`px-2.5 py-1 rounded-full text-[10px] font-bold ${
-                            reg.estado === 'Finalizado'
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : 'bg-amber-100 text-amber-800'
-                          }`}
-                        >
-                          {reg.estado || 'En Progreso'}
-                        </span>
-                      </td>
-                      <td className="p-4 whitespace-nowrap text-slate-500">
-                        {reg.latitud_registro && reg.longitud_registro ? (
-                          <a
-                            href={`https://maps.google.com/?q=${reg.latitud_registro},${reg.longitud_registro}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-blue-600 hover:underline font-medium"
-                          >
-                            Ver en Mapas
-                          </a>
-                        ) : (
-                          'Sin GPS'
-                        )}
-                      </td>
-                    </tr>
-                  ))}
+                  {registrosFiltrados.map((reg, idx) => {
+                    const ing = formatearFechaHora(reg.fechaIngreso);
+                    const sal = formatearFechaHora(reg.fechaSalida);
+
+                    return (
+                      <tr key={reg.id || idx} className="hover:bg-slate-50 transition">
+                        {/* Técnico */}
+                        <td className="p-4 font-semibold text-slate-800 whitespace-nowrap">
+                          {reg.nombre_tecnico}
+                        </td>
+
+                        {/* Cliente */}
+                        <td className="p-4 font-semibold text-slate-800 max-w-[180px]">
+                          {reg.nombre_cliente}
+                        </td>
+
+                        {/* Ingreso */}
+                        <td className="p-4 whitespace-nowrap text-slate-600">
+                          <div>{ing.fecha}</div>
+                          <div className="font-semibold text-slate-800">{ing.hora}</div>
+                        </td>
+
+                        {/* Salida */}
+                        <td className="p-4 whitespace-nowrap text-slate-600">
+                          {reg.fechaSalida ? (
+                            <>
+                              <div>{sal.fecha}</div>
+                              <div className="font-semibold text-slate-800">{sal.hora}</div>
+                            </>
+                          ) : (
+                            <span className="text-amber-600 font-semibold">En progreso</span>
+                          )}
+                        </td>
+
+                        {/* Desplazamiento desde el Cliente Anterior + Alerta */}
+                        <td className="p-4 whitespace-nowrap">
+                          {reg.desplazamientoRealMin !== null ? (
+                            <div className="space-y-1">
+                              <div><strong>Real:</strong> {reg.desplazamientoRealMin} min</div>
+                              <div className="text-slate-400"><strong>Est:</strong> {reg.desplazamientoEstMin} min</div>
+                              
+                              {/* Recuadro Verde/Alerta de Desplazamiento excedido */}
+                              {reg.alertaDesplazamiento && (
+                                <div className="bg-emerald-100 text-emerald-900 border border-emerald-300 p-2 rounded-lg text-[11px] font-medium space-y-0.5 max-w-[210px]">
+                                  <div>
+                                    Desplazamiento excedido por &gt;5m. Real: {reg.desplazamientoRealMin}m, Est: {reg.desplazamientoEstMin}m
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-slate-400 font-semibold">N/A</span>
+                          )}
+                        </td>
+
+                        {/* Duración Trabajo */}
+                        <td className="p-4 whitespace-nowrap">
+                          <div className="space-y-1">
+                            <div><strong className="text-slate-800">Real:</strong> {formatearDuracionStr(reg.duracionRealMin)}</div>
+                            <div><strong className="text-slate-800">Est:</strong> {reg.tiempoEstTrabajo} min</div>
+                            
+                            {reg.excedeTrabajo && (
+                              <div className="bg-amber-100 text-amber-900 border border-amber-200 p-2 rounded-lg text-[11px] font-medium space-y-0.5 max-w-[210px]">
+                                <div>Tiempo de trabajo excedido. Real: {reg.duracionRealMin}m, Est: {reg.tiempoEstTrabajo}m</div>
+                                <button className="text-blue-600 underline font-semibold text-[10px]">
+                                  (Revisar)
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </td>
+
+                        {/* Comentarios y Veredicto */}
+                        <td className="p-4 text-[11px] space-y-2 min-w-[200px]">
+                          <div>
+                            <span className="font-bold text-slate-800">Téc. (Viaje/Trabajo):</span>
+                            <div className="text-slate-600">"{reg.comentarioTecnico}"</div>
+                          </div>
+
+                          {reg.comentarioGerencia ? (
+                            <div>
+                              <span className="font-bold text-slate-800">Gerencia (Viaje):</span>
+                              <div className="mt-0.5">
+                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                  reg.estadoAlerta === 'Aprobada' ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'
+                                }`}>
+                                  {reg.estadoAlerta === 'Aprobada' ? 'Approved' : 'Rejected'}
+                                </span>
+                              </div>
+                              <div className="text-slate-500 italic mt-0.5">"{reg.comentarioGerencia}"</div>
+                            </div>
+                          ) : (
+                            (reg.alertaDesplazamiento || reg.excedeTrabajo) && (
+                              <span className="inline-block bg-amber-100 text-amber-800 px-2 py-0.5 rounded font-bold text-[10px]">
+                                Requiere Revisión Administrador
+                              </span>
+                            )
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
