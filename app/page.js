@@ -100,7 +100,7 @@ export default function Home() {
         // Validar geofencing de 20 metros si el cliente tiene coordenadas registradas
         if (latCli !== null && latCli !== undefined && lonCli !== null && lonCli !== undefined) {
           const distancia = calcularDistanciaMetros(latTec, lonTec, Number(latCli), Number(lonCli));
-          if (distancia !== null && distancia > 20) {
+          if (distancia !== null && distancia > 50) {
             setMensaje({
               tipo: 'error',
               texto: `No te encuentras en el sitio del cliente. Distancia actual: ${Math.round(distancia)}m (Máximo permitido: 20m).`
