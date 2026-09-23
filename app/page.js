@@ -65,13 +65,13 @@ export default function Home() {
     return idStr.includes(busqueda) || nombreStr.includes(busqueda);
   });
 
-  // Al seleccionar plantilla, obtener y mostrar su tiempo estimado
+  // Al seleccionar plantilla, obtener y mostrar el valor exacto de tiempo_est_min
   const handlePlantillaChange = (e) => {
     const pId = e.target.value;
     setPlantillaSel(pId);
     const pEncontrada = plantillas.find((p) => String(p.id) === String(pId));
     if (pEncontrada) {
-      setTiempoEst(pEncontrada.tiempo_estimado || pEncontrada.duracion_minutos || pEncontrada.tiempo || 30);
+      setTiempoEst(pEncontrada.tiempo_est_min ?? pEncontrada.tiempo_estimado ?? pEncontrada.duracion_minutos ?? 0);
     } else {
       setTiempoEst(0);
     }
@@ -227,7 +227,7 @@ export default function Home() {
               </select>
             </div>
 
-            {/* Plantilla y Tiempo Estimado */}
+            {/* Plantilla y Tiempo Estimado Total (Tomado de tiempo_est_min) */}
             <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-3">
               <div>
                 <label className="block mb-1 text-slate-800">Plantilla(s):</label>

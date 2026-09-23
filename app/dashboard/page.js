@@ -22,13 +22,12 @@ function calcularDistanciaKm(lat1, lon1, lat2, lon2) {
 // 2. Estimación DINÁMICA de tiempo de viaje según distancia real entre Entidad A y Entidad B
 function estimarTiempoViajeMinutos(lat1, lon1, lat2, lon2) {
   const distLineaRectaKm = calcularDistanciaKm(lat1, lon1, lat2, lon2);
-  if (distLineaRectaKm <= 0) return 10; // Tiempo mínimo por defecto si están en el mismo punto/sector
+  if (distLineaRectaKm <= 0) return 10; // Tiempo mínimo por defecto si están en el mismo sector
 
-  // Factor de curvatura vial (1.3) para estimar recorrido real por calles
+  // Factor de curvatura vial (1.3) para estimar recorrido por calles/carretera
   const distRutaAproxKm = distLineaRectaKm * 1.3;
 
-  // Velocidad promedio urbana estimada: 30 km/h (0.5 km por minuto)
-  // Se agregan 5 minutos base por semáforos, parqueo y arranque.
+  // Velocidad promedio urbana: 30 km/h + 5 minutos base (semáforos/tráfico)
   const tiempoMinutosCalculado = Math.round((distRutaAproxKm / 30) * 60) + 5;
   return tiempoMinutosCalculado;
 }
@@ -70,14 +69,15 @@ export default function Dashboard() {
         (dataTec || []).map((t) => [String(t.id), t.nombre || t.nombre_tecnico])
       );
       const mapClientesObj = Object.fromEntries(
-        (dataCli || []).map((c) => [String(c.id || c.id_cliente), c])
+        (dataCli || []).map((c) => [String(c.id_cliente || c.id), c])
       );
       const mapPlantillas = Object.fromEntries(
         (dataPla || []).map((p) => [
           String(p.id),
           {
             nombre: p.nombre || p.nombre_plantilla,
-            tiempoEst: p.tiempo_estimado || p.duracion_minutos || 60
+            // Mapear tiempo_est_min de la tabla de plantillas
+            tiempoEst: p.tiempo_est_min ?? p.tiempo_estimado ?? p.duracion_minutos ?? 60
           }
         ])
       );
@@ -93,7 +93,7 @@ export default function Dashboard() {
         const fechaIngreso = reg.created_at || reg.fecha_inicio || reg.fecha_registro;
         const fechaSalida = reg.fecha_fin || reg.updated_at;
 
-        // A. DURACIÓN DEL TRABAJO EN LA ENTIDAD
+        // A. DURACIÓN DEL TRABAJO
         let duracionRealMin = 0;
         if (fechaIngreso && fechaSalida && reg.estado === 'Finalizado') {
           const diffMs = new Date(fechaSalida) - new Date(fechaIngreso);
@@ -111,17 +111,16 @@ export default function Dashboard() {
         const anterior = ultimoRegistroPorTecnico[tecId];
 
         if (anterior && anterior.fechaSalida && fechaIngreso) {
-          // 1. Tiempo Real transcurrido desde la salida de la Entidad A hasta el ingreso a la Entidad B
+          // Tiempo Real transcurrido entre visitas
           const diffDespMs = new Date(fechaIngreso) - new Date(anterior.fechaSalida);
           desplazamientoRealMin = Math.max(0, Math.round(diffDespMs / (1000 * 60)));
 
-          // 2. Coordenadas de Entidad Origen (A) y Entidad Destino (B)
+          // Coordenadas Origen (A) y Destino (B)
           const lat1 = anterior.clienteObj?.latitud !== undefined ? anterior.clienteObj.latitud : anterior.clienteObj?.latitud_cliente;
           const lon1 = anterior.clienteObj?.longitud !== undefined ? anterior.clienteObj.longitud : anterior.clienteObj?.longitud_cliente;
           const lat2 = clienteObj?.latitud !== undefined ? clienteObj.latitud : clienteObj?.latitud_cliente;
           const lon2 = clienteObj?.longitud !== undefined ? clienteObj.longitud : clienteObj?.longitud_cliente;
 
-          // 3. Estimación dinámica basada en la distancia entre A y B
           if (lat1 && lon1 && lat2 && lon2) {
             desplazamientoEstMin = estimarTiempoViajeMinutos(
               Number(lat1),
@@ -130,10 +129,10 @@ export default function Dashboard() {
               Number(lon2)
             );
           } else {
-            desplazamientoEstMin = 15; // Estimación estándar por defecto si falta coordenadas en alguna entidad
+            desplazamientoEstMin = 15;
           }
 
-          // 4. Se genera la Alerta si el tiempo real supera el tiempo estimado específico + 5 minutos de tolerancia
+          // Alerta si el tiempo real supera el estimado + 5 min de tolerancia
           if (desplazamientoRealMin > (desplazamientoEstMin + 5)) {
             alertaDesplazamiento = true;
           }
@@ -147,7 +146,6 @@ export default function Dashboard() {
           };
         }
 
-        // Determinar Tipo de Alerta para el Administrador
         let tipoAlertaCalculado = 'Ninguna';
         if (alertaDesplazamiento && excedeTrabajo) {
           tipoAlertaCalculado = 'Desplazamiento y Trabajo';
@@ -237,7 +235,7 @@ export default function Dashboard() {
     <div className="min-h-screen bg-slate-100 p-4 md:p-8 font-sans">
       <div className="max-w-7xl mx-auto space-y-6">
         
-        {/* Cabecera y Botones Superiores */}
+        {/* Cabecera */}
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold text-slate-800">
@@ -287,7 +285,7 @@ export default function Dashboard() {
                 <option value="Todos">Todos</option>
                 {clientes.map((c) => {
                   const name = c.nombre || c.nombre_cliente;
-                  return <option key={c.id || c.id_cliente} value={name}>{name}</option>;
+                  return <option key={c.id_cliente || c.id} value={name}>{name}</option>;
                 })}
               </select>
             </div>
