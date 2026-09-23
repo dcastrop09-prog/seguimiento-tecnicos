@@ -56,10 +56,13 @@ export default function Home() {
     cargarCatalogos();
   }, []);
 
-  // Filtrar lista de clientes según la búsqueda ingresada
+  // Filtrar lista de clientes permitiendo buscar por ID/Código (ej. 4148) o por Nombre
   const clientesFiltrados = clientes.filter((c) => {
-    const nombre = c.nombre || c.nombre_cliente || '';
-    return nombre.toLowerCase().includes(busquedaCliente.toLowerCase());
+    const idStr = String(c.id_cliente || c.id || '').toLowerCase();
+    const nombreStr = String(c.nombre || c.nombre_cliente || '').toLowerCase();
+    const busqueda = busquedaCliente.toLowerCase().trim();
+
+    return idStr.includes(busqueda) || nombreStr.includes(busqueda);
   });
 
   // Al seleccionar plantilla, obtener y mostrar su tiempo estimado
@@ -74,7 +77,7 @@ export default function Home() {
     }
   };
 
-  // Registrar Inicio Mantenimiento con validación de geofencing (20 metros)
+  // Registrar Inicio Mantenimiento con validación de geofencing (50 metros)
   const handleInicioMantenimiento = () => {
     setMensaje({ tipo: '', texto: '' });
 
@@ -88,7 +91,7 @@ export default function Home() {
       return;
     }
 
-    const clienteObj = clientes.find((c) => String(c.id || c.id_cliente) === String(clienteSel));
+    const clienteObj = clientes.find((c) => String(c.id_cliente || c.id) === String(clienteSel));
 
     navigator.geolocation.getCurrentPosition(
       async (position) => {
@@ -97,13 +100,13 @@ export default function Home() {
         const latCli = clienteObj?.latitud !== undefined ? clienteObj.latitud : clienteObj?.latitud_cliente;
         const lonCli = clienteObj?.longitud !== undefined ? clienteObj.longitud : clienteObj?.longitud_cliente;
 
-        // Validar geofencing de 20 metros si el cliente tiene coordenadas registradas
+        // Validar geofencing de 50 metros si el cliente tiene coordenadas registradas
         if (latCli !== null && latCli !== undefined && lonCli !== null && lonCli !== undefined) {
           const distancia = calcularDistanciaMetros(latTec, lonTec, Number(latCli), Number(lonCli));
           if (distancia !== null && distancia > 50) {
             setMensaje({
               tipo: 'error',
-              texto: `No te encuentras en el sitio del cliente. Distancia actual: ${Math.round(distancia)}m (Máximo permitido: 20m).`
+              texto: `No te encuentras en el sitio del cliente. Distancia actual: ${Math.round(distancia)}m (Máximo permitido: 50m).`
             });
             return;
           }
@@ -196,12 +199,12 @@ export default function Home() {
               </select>
             </div>
 
-            {/* Buscar Cliente */}
+            {/* Buscar Cliente por Código o Nombre */}
             <div>
               <label className="block mb-1 text-slate-800">Buscar Cliente:</label>
               <input
                 type="text"
-                placeholder="Escriba para buscar..."
+                placeholder="Escriba código (ej. 4148) o nombre..."
                 value={busquedaCliente}
                 onChange={(e) => setBusquedaCliente(e.target.value)}
                 className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-slate-800 font-normal focus:outline-none focus:ring-1 focus:ring-blue-500 mb-1"
@@ -212,11 +215,15 @@ export default function Home() {
                 className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-slate-800 font-normal focus:outline-none focus:ring-1 focus:ring-blue-500"
               >
                 <option value="">-- Seleccione un cliente --</option>
-                {clientesFiltrados.map((c) => (
-                  <option key={c.id || c.id_cliente} value={c.id || c.id_cliente}>
-                    {c.nombre || c.nombre_cliente}
-                  </option>
-                ))}
+                {clientesFiltrados.map((c) => {
+                  const idCodigo = c.id_cliente || c.id;
+                  const nombre = c.nombre || c.nombre_cliente;
+                  return (
+                    <option key={idCodigo} value={idCodigo}>
+                      {idCodigo} - {nombre}
+                    </option>
+                  );
+                })}
               </select>
             </div>
 

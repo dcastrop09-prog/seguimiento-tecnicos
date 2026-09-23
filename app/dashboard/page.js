@@ -3,9 +3,9 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 
-// Fórmula de Haversine para calcular distancia en kilómetros entre dos coordenadas GPS
+// 1. Cálculo de distancia geográfica en kilómetros entre coordenadas
 function calcularDistanciaKm(lat1, lon1, lat2, lon2) {
-  if (!lat1 || !lon1 || !lat2 || !lon2) return 0;
+  if (lat1 === undefined || lon1 === undefined || lat2 === undefined || lon2 === undefined) return 0;
   const R = 6371; // Radio de la Tierra en km
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
   const dLon = ((lon2 - lon1) * Math.PI) / 180;
@@ -17,6 +17,20 @@ function calcularDistanciaKm(lat1, lon1, lat2, lon2) {
       Math.sin(dLon / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
+}
+
+// 2. Estimación DINÁMICA de tiempo de viaje según distancia real entre Entidad A y Entidad B
+function estimarTiempoViajeMinutos(lat1, lon1, lat2, lon2) {
+  const distLineaRectaKm = calcularDistanciaKm(lat1, lon1, lat2, lon2);
+  if (distLineaRectaKm <= 0) return 10; // Tiempo mínimo por defecto si están en el mismo punto/sector
+
+  // Factor de curvatura vial (1.3) para estimar recorrido real por calles
+  const distRutaAproxKm = distLineaRectaKm * 1.3;
+
+  // Velocidad promedio urbana estimada: 30 km/h (0.5 km por minuto)
+  // Se agregan 5 minutos base por semáforos, parqueo y arranque.
+  const tiempoMinutosCalculado = Math.round((distRutaAproxKm / 30) * 60) + 5;
+  return tiempoMinutosCalculado;
 }
 
 export default function Dashboard() {
@@ -68,8 +82,8 @@ export default function Dashboard() {
         ])
       );
 
-      // Objeto auxiliar para seguir el historial del último cliente y hora de fin de cada técnico
-      const ultimoRegistroTecnico = {};
+      // Rastreador del último cliente visitado por cada técnico
+      const ultimoRegistroPorTecnico = {};
 
       const registrosProcesados = (dataReg || []).map((reg) => {
         const clienteObj = mapClientesObj[String(reg.cliente_id)] || {};
@@ -79,7 +93,7 @@ export default function Dashboard() {
         const fechaIngreso = reg.created_at || reg.fecha_inicio || reg.fecha_registro;
         const fechaSalida = reg.fecha_fin || reg.updated_at;
 
-        // 1. Cálculo de Duración de Trabajo
+        // A. DURACIÓN DEL TRABAJO EN LA ENTIDAD
         let duracionRealMin = 0;
         if (fechaIngreso && fechaSalida && reg.estado === 'Finalizado') {
           const diffMs = new Date(fechaSalida) - new Date(fechaIngreso);
@@ -89,47 +103,51 @@ export default function Dashboard() {
         const tiempoEstTrabajo = plantillaObj.tiempoEst || 60;
         const excedeTrabajo = duracionRealMin > tiempoEstTrabajo;
 
-        // 2. Cálculo de Desplazamiento desde el Cliente Anterior
+        // B. DESPLAZAMIENTO DINÁMICO DESDE LA ENTIDAD ANTERIOR
         let desplazamientoRealMin = null;
         let desplazamientoEstMin = null;
         let alertaDesplazamiento = false;
 
-        const anterior = ultimoRegistroTecnico[tecId];
+        const anterior = ultimoRegistroPorTecnico[tecId];
 
         if (anterior && anterior.fechaSalida && fechaIngreso) {
-          // Tiempo real entre la salida del trabajo previo e ingreso al nuevo cliente
+          // 1. Tiempo Real transcurrido desde la salida de la Entidad A hasta el ingreso a la Entidad B
           const diffDespMs = new Date(fechaIngreso) - new Date(anterior.fechaSalida);
           desplazamientoRealMin = Math.max(0, Math.round(diffDespMs / (1000 * 60)));
 
-          // Coordenadas de origen (cliente previo) y destino (cliente actual)
-          const lat1 = anterior.clienteObj?.latitud || anterior.clienteObj?.latitud_cliente;
-          const lon1 = anterior.clienteObj?.longitud || anterior.clienteObj?.longitud_cliente;
-          const lat2 = clienteObj?.latitud || clienteObj?.latitud_cliente;
-          const lon2 = clienteObj?.longitud || clienteObj?.longitud_cliente;
+          // 2. Coordenadas de Entidad Origen (A) y Entidad Destino (B)
+          const lat1 = anterior.clienteObj?.latitud !== undefined ? anterior.clienteObj.latitud : anterior.clienteObj?.latitud_cliente;
+          const lon1 = anterior.clienteObj?.longitud !== undefined ? anterior.clienteObj.longitud : anterior.clienteObj?.longitud_cliente;
+          const lat2 = clienteObj?.latitud !== undefined ? clienteObj.latitud : clienteObj?.latitud_cliente;
+          const lon2 = clienteObj?.longitud !== undefined ? clienteObj.longitud : clienteObj?.longitud_cliente;
 
+          // 3. Estimación dinámica basada en la distancia entre A y B
           if (lat1 && lon1 && lat2 && lon2) {
-            const distKm = calcularDistanciaKm(Number(lat1), Number(lon1), Number(lat2), Number(lon2));
-            // Estimación basada en velocidad promedio de 30 km/h (2 min por km) + 5 min de tolerancia/base
-            desplazamientoEstMin = Math.round((distKm / 30) * 60) + 5;
+            desplazamientoEstMin = estimarTiempoViajeMinutos(
+              Number(lat1),
+              Number(lon1),
+              Number(lat2),
+              Number(lon2)
+            );
           } else {
-            desplazamientoEstMin = 15; // Tiempo base por defecto
+            desplazamientoEstMin = 15; // Estimación estándar por defecto si falta coordenadas en alguna entidad
           }
 
-          // Alerta si el tiempo real supera el estimado en MÁS DE 5 MINUTOS
+          // 4. Se genera la Alerta si el tiempo real supera el tiempo estimado específico + 5 minutos de tolerancia
           if (desplazamientoRealMin > (desplazamientoEstMin + 5)) {
             alertaDesplazamiento = true;
           }
         }
 
-        // Actualizar último registro activo del técnico para el siguiente cálculo
+        // Actualizar último cliente finalizado por el técnico
         if (fechaSalida && reg.estado === 'Finalizado') {
-          ultimoRegistroTecnico[tecId] = {
+          ultimoRegistroPorTecnico[tecId] = {
             fechaSalida,
             clienteObj
           };
         }
 
-        // Determinación del Tipo de Alerta
+        // Determinar Tipo de Alerta para el Administrador
         let tipoAlertaCalculado = 'Ninguna';
         if (alertaDesplazamiento && excedeTrabajo) {
           tipoAlertaCalculado = 'Desplazamiento y Trabajo';
@@ -159,7 +177,6 @@ export default function Dashboard() {
         };
       });
 
-      // Invertir orden para que aparezcan los más recientes arriba
       setRegistros(registrosProcesados.reverse());
     } catch (err) {
       console.error('Error cargando el dashboard:', err);
@@ -181,7 +198,6 @@ export default function Dashboard() {
     setFiltroEstadoAlerta('Cualquiera');
   };
 
-  // Filtrado de registros
   const registrosFiltrados = registros.filter((reg) => {
     if (filtroTecnico !== 'Todos' && reg.nombre_tecnico !== filtroTecnico) return false;
     if (filtroCliente !== 'Todos' && reg.nombre_cliente !== filtroCliente) return false;
@@ -228,7 +244,7 @@ export default function Dashboard() {
               Dashboard de Actividad
             </h1>
             <p className="text-slate-500 text-xs mt-0.5">
-              Mostrando el historial de visitas de los técnicos con alertas de desplazamiento y tiempos.
+              Mostrando el historial de visitas de los técnicos con estimación dinámica de desplazamiento entre entidades.
             </p>
           </div>
           <div className="flex gap-3">
@@ -343,10 +359,10 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Tabla Principal con Alertas */}
+        {/* Tabla con Alertas Dinámicas */}
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
           {cargando ? (
-            <div className="p-8 text-center text-slate-400 text-xs">Cargando registros de actividad...</div>
+            <div className="p-8 text-center text-slate-400 text-xs">Cargando registros...</div>
           ) : registrosFiltrados.length === 0 ? (
             <div className="p-8 text-center text-slate-500 text-xs">
               No se encontraron registros con los filtros seleccionados.
@@ -372,23 +388,19 @@ export default function Dashboard() {
 
                     return (
                       <tr key={reg.id || idx} className="hover:bg-slate-50 transition">
-                        {/* Técnico */}
                         <td className="p-4 font-semibold text-slate-800 whitespace-nowrap">
                           {reg.nombre_tecnico}
                         </td>
 
-                        {/* Cliente */}
                         <td className="p-4 font-semibold text-slate-800 max-w-[180px]">
                           {reg.nombre_cliente}
                         </td>
 
-                        {/* Ingreso */}
                         <td className="p-4 whitespace-nowrap text-slate-600">
                           <div>{ing.fecha}</div>
                           <div className="font-semibold text-slate-800">{ing.hora}</div>
                         </td>
 
-                        {/* Salida */}
                         <td className="p-4 whitespace-nowrap text-slate-600">
                           {reg.fechaSalida ? (
                             <>
@@ -400,18 +412,17 @@ export default function Dashboard() {
                           )}
                         </td>
 
-                        {/* Desplazamiento desde el Cliente Anterior + Alerta */}
+                        {/* Desplazamiento Dinámico */}
                         <td className="p-4 whitespace-nowrap">
                           {reg.desplazamientoRealMin !== null ? (
                             <div className="space-y-1">
                               <div><strong>Real:</strong> {reg.desplazamientoRealMin} min</div>
                               <div className="text-slate-400"><strong>Est:</strong> {reg.desplazamientoEstMin} min</div>
                               
-                              {/* Recuadro Verde/Alerta de Desplazamiento excedido */}
                               {reg.alertaDesplazamiento && (
                                 <div className="bg-emerald-100 text-emerald-900 border border-emerald-300 p-2 rounded-lg text-[11px] font-medium space-y-0.5 max-w-[210px]">
                                   <div>
-                                    Desplazamiento excedido por &gt;5m. Real: {reg.desplazamientoRealMin}m, Est: {reg.desplazamientoEstMin}m
+                                    Desplazamiento excedido. Real: {reg.desplazamientoRealMin}m, Est: {reg.desplazamientoEstMin}m
                                   </div>
                                 </div>
                               )}
@@ -441,7 +452,7 @@ export default function Dashboard() {
                         {/* Comentarios y Veredicto */}
                         <td className="p-4 text-[11px] space-y-2 min-w-[200px]">
                           <div>
-                            <span className="font-bold text-slate-800">Téc. (Viaje/Trabajo):</span>
+                            <span className="font-bold text-slate-800">Téc. (Trabajo):</span>
                             <div className="text-slate-600">"{reg.comentarioTecnico}"</div>
                           </div>
 
@@ -460,7 +471,7 @@ export default function Dashboard() {
                           ) : (
                             (reg.alertaDesplazamiento || reg.excedeTrabajo) && (
                               <span className="inline-block bg-amber-100 text-amber-800 px-2 py-0.5 rounded font-bold text-[10px]">
-                                Requiere Revisión Administrador
+                                Requiere Revisión
                               </span>
                             )
                           )}
