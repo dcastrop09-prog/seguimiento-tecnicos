@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase';
 
 // Función para calcular la distancia en metros entre dos coordenadas (Fórmula de Haversine)
 function calcularDistanciaMetros(lat1, lon1, lat2, lon2) {
-  if (!lat1 || !lon1 || !lat2 || !lon2) return 0;
+  if (lat1 === undefined || lon1 === undefined || lat2 === undefined || lon2 === undefined) return null;
   const R = 6371000; // Radio de la Tierra en metros
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
   const dLon = ((lon2 - lon1) * Math.PI) / 180;
@@ -33,6 +33,7 @@ export default function Home() {
   const [cargando, setCargando] = useState(true);
   const [mensaje, setMensaje] = useState({ tipo: '', texto: '' });
 
+  // Cargar catálogos al iniciar la pantalla
   useEffect(() => {
     async function cargarCatalogos() {
       try {
@@ -47,7 +48,7 @@ export default function Home() {
         if (dataCli) setClientes(dataCli);
         if (dataPla) setPlantillas(dataPla);
       } catch (err) {
-        setMensaje({ tipo: 'error', texto: 'Error cargando datos de Supabase.' });
+        setMensaje({ tipo: 'error', texto: 'Error cargando datos desde Supabase.' });
       } finally {
         setCargando(false);
       }
@@ -55,25 +56,25 @@ export default function Home() {
     cargarCatalogos();
   }, []);
 
-  // Filtrar clientes según el texto de búsqueda
+  // Filtrar lista de clientes según la búsqueda ingresada
   const clientesFiltrados = clientes.filter((c) => {
     const nombre = c.nombre || c.nombre_cliente || '';
     return nombre.toLowerCase().includes(busquedaCliente.toLowerCase());
   });
 
-  // Al seleccionar plantilla, actualizar el tiempo estimado
+  // Al seleccionar plantilla, obtener y mostrar su tiempo estimado
   const handlePlantillaChange = (e) => {
     const pId = e.target.value;
     setPlantillaSel(pId);
     const pEncontrada = plantillas.find((p) => String(p.id) === String(pId));
     if (pEncontrada) {
-      setTiempoEst(pEncontrada.tiempo_estimado || pEncontrada.duracion_minutos || 30);
+      setTiempoEst(pEncontrada.tiempo_estimado || pEncontrada.duracion_minutos || pEncontrada.tiempo || 30);
     } else {
       setTiempoEst(0);
     }
   };
 
-  // Validar proximidad y registrar Inicio
+  // Registrar Inicio Mantenimiento con validación de geofencing (20 metros)
   const handleInicioMantenimiento = () => {
     setMensaje({ tipo: '', texto: '' });
 
@@ -83,7 +84,7 @@ export default function Home() {
     }
 
     if (!navigator.geolocation) {
-      setMensaje({ tipo: 'error', texto: 'GPS no soportado en este navegador.' });
+      setMensaje({ tipo: 'error', texto: 'Tu dispositivo no soporta geolocalización GPS.' });
       return;
     }
 
@@ -92,22 +93,23 @@ export default function Home() {
     navigator.geolocation.getCurrentPosition(
       async (position) => {
         const { latitude: latTec, longitude: lonTec } = position.coords;
-        const latCli = clienteObj?.latitud || clienteObj?.latitud_cliente;
-        const lonCli = clienteObj?.longitud || clienteObj?.longitud_cliente;
 
-        // Validar si el cliente tiene ubicación registrada y el radio de 20m
-        if (latCli && lonCli) {
-          const distanciaMetros = calcularDistanciaMetros(latTec, lonTec, latCli, lonCli);
-          if (distanciaMetros > 20) {
+        const latCli = clienteObj?.latitud !== undefined ? clienteObj.latitud : clienteObj?.latitud_cliente;
+        const lonCli = clienteObj?.longitud !== undefined ? clienteObj.longitud : clienteObj?.longitud_cliente;
+
+        // Validar geofencing de 20 metros si el cliente tiene coordenadas registradas
+        if (latCli !== null && latCli !== undefined && lonCli !== null && lonCli !== undefined) {
+          const distancia = calcularDistanciaMetros(latTec, lonTec, Number(latCli), Number(lonCli));
+          if (distancia !== null && distancia > 20) {
             setMensaje({
               tipo: 'error',
-              texto: `No te encuentras en el sitio del cliente. Distancia actual: ${Math.round(distanciaMetros)}m (Máximo permitido: 20m).`
+              texto: `No te encuentras en el sitio del cliente. Distancia actual: ${Math.round(distancia)}m (Máximo permitido: 20m).`
             });
             return;
           }
         }
 
-        // Guardar registro de inicio
+        // Insertar registro de inicio en la base de datos
         const { error } = await supabase.from('registros_actividad').insert([
           {
             tecnico_id: tecnicoSel,
@@ -115,6 +117,8 @@ export default function Home() {
             plantilla_id: plantillaSel,
             latitud_registro: latTec,
             longitud_registro: lonTec,
+            latitud: latTec,
+            longitud: lonTec,
             estado: 'En Mantenimiento'
           }
         ]);
@@ -125,8 +129,10 @@ export default function Home() {
           setMensaje({ tipo: 'exito', texto: '¡Inicio de mantenimiento registrado con éxito!' });
         }
       },
-      () => setMensaje({ tipo: 'error', texto: 'Debes permitir el acceso al GPS para continuar.' }),
-      { enableHighAccuracy: true }
+      (err) => {
+        setMensaje({ tipo: 'error', texto: 'No se pudo obtener la ubicación GPS. Activa el GPS y concede permisos.' });
+      },
+      { enableHighAccuracy: true, timeout: 15000 }
     );
   };
 
@@ -135,7 +141,7 @@ export default function Home() {
     setMensaje({ tipo: '', texto: '' });
 
     if (!tecnicoSel || !clienteSel) {
-      setMensaje({ tipo: 'error', texto: 'Selecciona Técnico y Cliente para finalizar.' });
+      setMensaje({ tipo: 'error', texto: 'Selecciona Técnico y Cliente para registrar el fin.' });
       return;
     }
 
@@ -160,7 +166,7 @@ export default function Home() {
     setPlantillaSel('');
     setBusquedaCliente('');
     setTiempoEst(0);
-    setMensaje({ tipo: 'exito', texto: 'Jornada del día finalizada correctamente.' });
+    setMensaje({ tipo: 'exito', texto: 'Jornada finalizada correctamente.' });
   };
 
   return (
@@ -172,7 +178,7 @@ export default function Home() {
         </h1>
 
         {cargando ? (
-          <div className="text-center py-8 text-slate-400 text-xs">Cargando datos...</div>
+          <div className="text-center py-8 text-slate-400 text-xs">Cargando opciones...</div>
         ) : (
           <div className="space-y-4 text-xs font-semibold text-slate-700">
             {/* Técnico */}
@@ -202,23 +208,21 @@ export default function Home() {
                 onChange={(e) => setBusquedaCliente(e.target.value)}
                 className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-slate-800 font-normal focus:outline-none focus:ring-1 focus:ring-blue-500 mb-1"
               />
-              {busquedaCliente && (
-                <select
-                  value={clienteSel}
-                  onChange={(e) => setClienteSel(e.target.value)}
-                  className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg text-slate-800 font-normal"
-                >
-                  <option value="">-- Seleccionar de los resultados --</option>
-                  {clientesFiltrados.map((c) => (
-                    <option key={c.id || c.id_cliente} value={c.id || c.id_cliente}>
-                      {c.nombre || c.nombre_cliente}
-                    </option>
-                  ))}
-                </select>
-              )}
+              <select
+                value={clienteSel}
+                onChange={(e) => setClienteSel(e.target.value)}
+                className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-slate-800 font-normal focus:outline-none focus:ring-1 focus:ring-blue-500"
+              >
+                <option value="">-- Seleccione un cliente --</option>
+                {clientesFiltrados.map((c) => (
+                  <option key={c.id || c.id_cliente} value={c.id || c.id_cliente}>
+                    {c.nombre || c.nombre_cliente}
+                  </option>
+                ))}
+              </select>
             </div>
 
-            {/* Recuadro Plantilla y Tiempo */}
+            {/* Plantilla y Tiempo Estimado */}
             <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-3">
               <div>
                 <label className="block mb-1 text-slate-800">Plantilla(s):</label>
@@ -242,12 +246,12 @@ export default function Home() {
                   type="number"
                   readOnly
                   value={tiempoEst}
-                  className="w-full p-2.5 bg-slate-200 border border-slate-300 rounded-lg text-slate-600 font-medium"
+                  className="w-full p-2.5 bg-slate-200 border border-slate-300 rounded-lg text-slate-600 font-medium focus:outline-none"
                 />
               </div>
             </div>
 
-            {/* Mensajes de feedback */}
+            {/* Cuadro de Mensajes y Alertas */}
             {mensaje.texto && (
               <div
                 className={`p-3 rounded-lg text-center font-medium ${
@@ -260,7 +264,7 @@ export default function Home() {
               </div>
             )}
 
-            {/* Botones principales */}
+            {/* Botones de Mantenimiento */}
             <div className="grid grid-cols-2 gap-3 pt-2">
               <button
                 type="button"
